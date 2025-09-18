@@ -63,13 +63,8 @@ class APIController {
         } ?: throw IllegalArgumentException("No such order $orderId")
 
 
-        val result = orderPayer.processPayment(orderId, order.price, paymentId, deadline)
-        if (result.success) {
-            println("Payment queued at: ${result.createdAt}")
-        } else {
-            println("Payment failed: ${result.errorMessage}")
-        }
-        return PaymentSubmissionDto(result.createdAt, paymentId)
+        val createdAt = orderPayer.processPayment(orderId, order.price, paymentId, deadline)
+        return PaymentSubmissionDto(createdAt, paymentId)
     }
 
     class PaymentSubmissionDto(

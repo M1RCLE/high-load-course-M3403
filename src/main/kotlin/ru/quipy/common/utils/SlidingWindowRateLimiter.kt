@@ -9,6 +9,7 @@ import org.slf4j.LoggerFactory
 import java.time.Duration
 import java.util.concurrent.Executors
 import java.util.concurrent.PriorityBlockingQueue
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.locks.ReentrantLock
 import kotlin.concurrent.withLock
@@ -66,5 +67,63 @@ class SlidingWindowRateLimiter(
     }.invokeOnCompletion { th -> if (th != null) logger.error("Rate limiter release job completed", th) }
     companion object {
         private val logger: Logger = LoggerFactory.getLogger(SlidingWindowRateLimiter::class.java)
+    }
+}
+
+class Semaphore(permits: Int) {
+    private val lock = ReentrantLock()
+    private val condition = lock.newCondition()
+    private var availablePermits = permits
+
+    @Throws(InterruptedException::class)
+    fun acquire() {
+        lock.withLock {
+            while (availablePermits <= 0) {
+                condition.await()
+            }
+            availablePermits--
+        }
+    }
+
+    fun tryAcquire(): Boolean {
+        return lock.withLock {
+            if (availablePermits > 0) {
+                availablePermits--
+                true
+            } else {
+                false
+            }
+        }
+    }
+
+    @Throws(InterruptedException::class)
+    fun tryAcquire(timeout: Long, unit: TimeUnit): Boolean {
+        var remainingNanos = unit.toNanos(timeout)
+        lock.lock()
+        try {
+            while (availablePermits <= 0) {
+                if (remainingNanos <= 0) {
+                    return false
+                }
+                remainingNanos = condition.awaitNanos(remainingNanos)
+            }
+            availablePermits--
+            return true
+        } finally {
+            lock.unlock()
+        }
+    }
+
+    fun release() {
+        lock.withLock {
+            availablePermits++
+            condition.signal()
+        }
+    }
+
+    fun availablePermits(): Int {
+        return lock.withLock {
+            availablePermits
+        }
     }
 }

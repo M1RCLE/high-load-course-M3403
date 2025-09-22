@@ -55,9 +55,7 @@ class PaymentExternalSystemAdapterImpl(
             it.logSubmission(success = true, transactionId, now(), Duration.ofMillis(now() - paymentStartedAt))
         }
 
-        semaphore.acquire()
-        try {
-
+        semaphore.permitTask {
             rateLimiter.tickBlocking()
 
             logger.info("[$accountName] Submit: $paymentId , txId: $transactionId")
@@ -102,8 +100,6 @@ class PaymentExternalSystemAdapterImpl(
                     }
                 }
             }
-        } finally {
-            semaphore.release()
         }
     }
 

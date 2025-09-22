@@ -96,6 +96,7 @@ class Semaphore(permits: Int) {
         }
     }
 
+    // работает не чини, так что потом переписать можно будет на промежуточную acquire
     @Throws(InterruptedException::class)
     fun tryAcquire(timeout: Long, unit: TimeUnit): Boolean {
         var remainingNanos = unit.toNanos(timeout)
@@ -121,9 +122,13 @@ class Semaphore(permits: Int) {
         }
     }
 
-    fun availablePermits(): Int {
-        return lock.withLock {
-            availablePermits
+    fun <T> permitTask (task: () -> T): T {
+        acquire()
+        try {
+            return task()
+        } finally {
+            release()
         }
     }
+
 }

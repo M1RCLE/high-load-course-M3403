@@ -1,5 +1,7 @@
 package ru.quipy.apigateway
 
+import io.micrometer.core.instrument.Counter
+import io.micrometer.core.instrument.MeterRegistry
 import org.slf4j.Logger
 import org.slf4j.LoggerFactory
 import org.springframework.beans.factory.annotation.Autowired
@@ -9,9 +11,14 @@ import ru.quipy.payments.logic.OrderPayer
 import java.util.*
 
 @RestController
-class APIController {
+class APIController(@Autowired val meterRegistry: MeterRegistry) {
 
     val logger: Logger = LoggerFactory.getLogger(APIController::class.java)
+
+    private val orderCounter: Counter = Counter.builder("http_requests_served")
+        .description("Total number of served http requests for order payment")
+        .tag("endpoint", "pay_order")
+        .register(meterRegistry)
 
     @Autowired
     private lateinit var orderRepository: OrderRepository
@@ -21,6 +28,7 @@ class APIController {
 
     @PostMapping("/users")
     fun createUser(@RequestBody req: CreateUserRequest): User {
+        orderCounter.increment()
         return User(UUID.randomUUID(), req.name)
     }
 
@@ -30,6 +38,7 @@ class APIController {
 
     @PostMapping("/orders")
     fun createOrder(@RequestParam userId: UUID, @RequestParam price: Int): Order {
+        orderCounter.increment()
         val order = Order(
             UUID.randomUUID(),
             userId,
@@ -57,6 +66,7 @@ class APIController {
     @PostMapping("/orders/{orderId}/payment")
     fun payOrder(@PathVariable orderId: UUID, @RequestParam deadline: Long): PaymentSubmissionDto {
         val paymentId = UUID.randomUUID()
+        orderCounter.increment()
         val order = orderRepository.findById(orderId)?.let {
             orderRepository.save(it.copy(status = OrderStatus.PAYMENT_IN_PROGRESS))
             it

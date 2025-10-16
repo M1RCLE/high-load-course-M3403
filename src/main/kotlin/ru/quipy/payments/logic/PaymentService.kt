@@ -48,3 +48,5 @@ class ExternalSysResponse(
     val result: Boolean,
     val message: String? = null,
 )
+
+class RequestsLimitException() : RuntimeException()

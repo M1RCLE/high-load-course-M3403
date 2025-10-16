@@ -33,7 +33,6 @@ class PaymentExternalSystemAdapterImpl(
 
     private val serviceName = properties.serviceName
     private val accountName = properties.accountName
-    private val averageProcessTime = properties.averageProcessingTime
     private val rateLimitPerSec = properties.rateLimitPerSec
     private val parallelRequests = properties.parallelRequests
 
@@ -66,9 +65,6 @@ class PaymentExternalSystemAdapterImpl(
         }
 
         try {
-//            if (semaphore.tryAcquire(averageProcessTime.toMillis(), TimeUnit.MILLISECONDS)) {
-//                return deadlineHandler(paymentId, transactionId)
-//            }
             semaphore.acquire()
             rateLimiter.tickBlocking()
 

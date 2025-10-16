@@ -20,6 +20,9 @@ target/
 *.ipr
 http-client.env.json
 
+grafana/data/*
+prometheus/data/*
+
 ### NetBeans ###
 /nbproject/private/
 

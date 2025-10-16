@@ -5,10 +5,19 @@ import io.micrometer.core.instrument.MeterRegistry
 import org.slf4j.Logger
 import org.slf4j.LoggerFactory
 import org.springframework.beans.factory.annotation.Autowired
-import org.springframework.web.bind.annotation.*
+import org.springframework.http.HttpHeaders
+import org.springframework.http.HttpStatus
+import org.springframework.http.ResponseEntity
+import org.springframework.web.bind.annotation.ExceptionHandler
+import org.springframework.web.bind.annotation.PathVariable
+import org.springframework.web.bind.annotation.PostMapping
+import org.springframework.web.bind.annotation.RequestBody
+import org.springframework.web.bind.annotation.RequestParam
+import org.springframework.web.bind.annotation.RestController
+import ru.quipy.common.utils.TooManyRequestsException
 import ru.quipy.orders.repository.OrderRepository
 import ru.quipy.payments.logic.OrderPayer
-import java.util.*
+import java.util.UUID
 
 @RestController
 class APIController(@Autowired val meterRegistry: MeterRegistry) {
@@ -76,6 +85,12 @@ class APIController(@Autowired val meterRegistry: MeterRegistry) {
         val createdAt = orderPayer.processPayment(orderId, order.price, paymentId, deadline)
         return PaymentSubmissionDto(createdAt, paymentId)
     }
+
+    @ExceptionHandler(TooManyRequestsException::class)
+    fun tooManyRequestsExceptionHandler(exception: TooManyRequestsException) =
+        ResponseEntity.status(HttpStatus.TOO_MANY_REQUESTS)
+            .headers(HttpHeaders().apply { add(HttpHeaders.RETRY_AFTER, exception.delay.toString()) })
+            .body(exception.message)
 
     class PaymentSubmissionDto(
         val timestamp: Long,

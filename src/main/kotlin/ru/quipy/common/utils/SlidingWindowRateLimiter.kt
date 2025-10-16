@@ -9,10 +9,8 @@ import org.slf4j.LoggerFactory
 import java.time.Duration
 import java.util.concurrent.Executors
 import java.util.concurrent.PriorityBlockingQueue
-import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicLong
-import java.util.concurrent.locks.ReentrantLock
-import kotlin.concurrent.withLock
+import java.util.concurrent.locks.LockSupport
 
 class SlidingWindowRateLimiter(
     private val rate: Long,
@@ -38,6 +36,17 @@ class SlidingWindowRateLimiter(
         while (!tick()) {
             Thread.sleep(10)
         }
+    }
+
+    /**
+     * Пытаемся взять блокировку до заданного момента времени
+     */
+    fun blockingUntil(instant: Long): Boolean {
+        while(System.currentTimeMillis() < instant) {
+            if (tick()) return true
+            LockSupport.parkNanos(Duration.ofMillis(1).toNanos())
+        }
+        return false
     }
 
     data class Measure(

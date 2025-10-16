@@ -1582,7 +1582,7 @@
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 0
+            "y": 4
           },
           "id": 101,
           "options": {
@@ -1603,7 +1603,7 @@
             {
               "disableTextWrap": false,
               "editorMode": "builder",
-              "expr": "rate(http_requests_served_total[$__rate_interval])",
+              "expr": "rate(http_requests_served_total{endpoint=~\"pay_order\"}[$__rate_interval])",
               "fullMetaSearch": false,
               "includeNullMetadata": true,
               "legendFormat": "__auto",
@@ -1618,7 +1618,7 @@
               },
               "disableTextWrap": false,
               "editorMode": "builder",
-              "expr": "rate(payment_service_sanded_total[$__rate_interval])",
+              "expr": "rate(payment_service_sanded_total{service=~\"$service\"}[$__rate_interval])",
               "fullMetaSearch": false,
               "hide": false,
               "includeNullMetadata": true,
@@ -1629,145 +1629,7 @@
               "useBackend": false
             }
           ],
-          "title": "New panel",
-          "type": "timeseries"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "PBFA97CFB590B2093"
-          },
-          "fieldConfig": {
-            "defaults": {
-              "color": {
-                "mode": "palette-classic"
-              },
-              "custom": {
-                "axisBorderShow": false,
-                "axisCenteredZero": false,
-                "axisColorMode": "text",
-                "axisLabel": "",
-                "axisPlacement": "auto",
-                "barAlignment": 0,
-                "barWidthFactor": 0.6,
-                "drawStyle": "line",
-                "fillOpacity": 0,
-                "gradientMode": "none",
-                "hideFrom": {
-                  "legend": false,
-                  "tooltip": false,
-                  "viz": false
-                },
-                "insertNulls": false,
-                "lineInterpolation": "smooth",
-                "lineStyle": {
-                  "fill": "solid"
-                },
-                "lineWidth": 1,
-                "pointSize": 5,
-                "scaleDistribution": {
-                  "type": "linear"
-                },
-                "showPoints": "never",
-                "spanNulls": false,
-                "stacking": {
-                  "group": "A",
-                  "mode": "none"
-                },
-                "thresholdsStyle": {
-                  "mode": "off"
-                }
-              },
-              "mappings": [],
-              "thresholds": {
-                "mode": "absolute",
-                "steps": [
-                  {
-                    "color": "green",
-                    "value": null
-                  },
-                  {
-                    "color": "red",
-                    "value": 80
-                  }
-                ]
-              },
-              "unit": "ms"
-            },
-            "overrides": [
-              {
-                "matcher": {
-                  "id": "byName",
-                  "options": "success"
-                },
-                "properties": [
-                  {
-                    "id": "color",
-                    "value": {
-                      "fixedColor": "green",
-                      "mode": "fixed"
-                    }
-                  }
-                ]
-              },
-              {
-                "matcher": {
-                  "id": "byName",
-                  "options": "fail"
-                },
-                "properties": [
-                  {
-                    "id": "color",
-                    "value": {
-                      "fixedColor": "red",
-                      "mode": "fixed"
-                    }
-                  }
-                ]
-              }
-            ]
-          },
-          "gridPos": {
-            "h": 8,
-            "w": 12,
-            "x": 12,
-            "y": 4
-          },
-          "id": 14,
-          "options": {
-            "legend": {
-              "calcs": [
-                "max"
-              ],
-              "displayMode": "table",
-              "placement": "right",
-              "showLegend": true,
-              "sortBy": "Max",
-              "sortDesc": true
-            },
-            "tooltip": {
-              "mode": "single",
-              "sort": "none"
-            }
-          },
-          "pluginVersion": "11.4.0",
-          "targets": [
-            {
-              "datasource": {
-                "type": "prometheus",
-                "uid": "PBFA97CFB590B2093"
-              },
-              "editorMode": "code",
-              "exemplar": true,
-              "expr": "rate(http_external_duration_sum{service=~\"$service\"}[1m]) / rate(http_external_duration_count{service=~\"$service\"}[1m])",
-              "hide": false,
-              "interval": "",
-              "legendFormat": "{{method}} - {{result}}",
-              "range": true,
-              "refId": "C"
-            }
-          ],
-          "title": "(Clients -> Online shop) http requests duration. Average",
+          "title": "sending rate & processing speed",
           "type": "timeseries"
         },
         {

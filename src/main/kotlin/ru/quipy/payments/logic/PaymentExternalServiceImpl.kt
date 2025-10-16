@@ -14,6 +14,9 @@ import java.time.Duration
 import java.util.*
 import java.util.concurrent.Semaphore
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.LinkedBlockingQueue
+import java.util.concurrent.RejectedExecutionException
+import java.util.concurrent.ThreadPoolExecutor
 
 
 // Advice: always treat time as a Duration
@@ -35,6 +38,9 @@ class PaymentExternalSystemAdapterImpl(
     private val accountName = properties.accountName
     private val rateLimitPerSec = properties.rateLimitPerSec
     private val parallelRequests = properties.parallelRequests
+//    private val averageProcessingTime = properties.averageProcessingTime
+
+    private val queueCapacity: Int = 30 * rateLimitPerSec
 
     private val client = OkHttpClient.Builder().build()
 
@@ -45,25 +51,48 @@ class PaymentExternalSystemAdapterImpl(
         Duration.ofSeconds(1)
     )
 
-    fun deadlineHandler(paymentId: UUID, transactionId: UUID) {
-        paymentESService.update(paymentId) {
-            it.logProcessing(false, now(), transactionId, reason = "Deadline passed")
-        }
-        logger.error("[$accountName] Payment failed for txId: $transactionId, payment: $paymentId")
-        return
-    }
+    private val requestQueue = LinkedBlockingQueue<Runnable>(queueCapacity)
+
+    // Executor для обработки запросов из очереди
+    private val executor = ThreadPoolExecutor(
+        parallelRequests,
+        parallelRequests,
+        0L,
+        TimeUnit.SECONDS,
+        requestQueue,
+        ThreadPoolExecutor.AbortPolicy() // Выбрасывает RejectedExecutionException при переполнении
+    )
 
     override fun performPaymentAsync(paymentId: UUID, amount: Int, paymentStartedAt: Long, deadline: Long) {
         logger.warn("[$accountName] Submitting payment request for payment $paymentId")
         logger.info("rate limiter rate limit per sec: {}", rateLimitPerSec)
         val transactionId = UUID.randomUUID()
 
-        // Вне зависимости от исхода оплаты важно отметить что она была отправлена.
-        // Это требуется сделать ВО ВСЕХ СЛУЧАЯХ, поскольку эта информация используется сервисом тестирования.
-        paymentESService.update(paymentId) {
-            it.logSubmission(success = true, transactionId, now(), Duration.ofMillis(now() - paymentStartedAt))
-        }
+        try {
+            // Пытаемся добавить задачу в очередь
+            executor.execute {
+                processPayment(paymentId, amount, paymentStartedAt, transactionId)
+            }
 
+            // Вне зависимости от исхода оплаты важно отметить что она была отправлена.
+            paymentESService.update(paymentId) {
+                it.logSubmission(success = true, transactionId, now(), Duration.ofMillis(now() - paymentStartedAt))
+            }
+        } catch (e: RejectedExecutionException) {
+            logger.error("[$accountName] Queue is full! Cannot accept payment $paymentId. Queue size: ${requestQueue.size}, capacity: $queueCapacity")
+
+            paymentESService.update(paymentId) {
+                it.logSubmission(success = false, transactionId, now(), Duration.ofMillis(now() - paymentStartedAt))
+            }
+
+            throw PaymentQueueOverflowException(
+                "Payment queue is full (capacity: $queueCapacity). Cannot process payment $paymentId",
+                e
+            )
+        }
+    }
+
+    private fun processPayment(paymentId: UUID, amount: Int, paymentStartedAt: Long, transactionId: UUID) {
         try {
             semaphore.acquire()
             rateLimiter.tickBlocking()
@@ -87,7 +116,6 @@ class PaymentExternalSystemAdapterImpl(
                 logger.warn("[$accountName] Payment processed for txId: $transactionId, payment: $paymentId, succeeded: ${body.result}, message: ${body.message}")
 
                 // Здесь мы обновляем состояние оплаты в зависимости от результата в базе данных оплат.
-                // Это требуется сделать ВО ВСЕХ ИСХОДАХ (успешная оплата / неуспешная / ошибочная ситуация)
                 paymentESService.update(paymentId) {
                     it.logProcessing(body.result, now(), transactionId, reason = body.message)
                 }
@@ -118,6 +146,21 @@ class PaymentExternalSystemAdapterImpl(
 
     override fun name() = properties.accountName
 
+    fun shutdown() {
+        executor.shutdown()
+        try {
+            if (!executor.awaitTermination(60, TimeUnit.SECONDS)) {
+                executor.shutdownNow()
+            }
+        } catch (e: InterruptedException) {
+            executor.shutdownNow()
+            Thread.currentThread().interrupt()
+        }
+    }
+
+    fun getQueueSize() = requestQueue.size
 }
+
+class PaymentQueueOverflowException(message: String, cause: Throwable? = null) : RuntimeException(message, cause)
 
 public fun now() = System.currentTimeMillis()

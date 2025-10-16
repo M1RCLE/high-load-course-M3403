@@ -10,6 +10,7 @@ import org.springframework.http.ResponseEntity
 import org.springframework.web.bind.annotation.*
 import ru.quipy.orders.repository.OrderRepository
 import ru.quipy.payments.logic.OrderPayer
+import ru.quipy.payments.logic.PaymentQueueOverflowException
 import java.util.*
 import ru.quipy.payments.logic.RequestsLimitException
 import ru.quipy.payments.logic.now
@@ -80,7 +81,7 @@ class APIController(@Autowired val meterRegistry: MeterRegistry) {
         var createdAt: Long
         try {
             createdAt = orderPayer.processPayment(orderId, order.price, paymentId, deadline)
-        } catch (_: RequestsLimitException) {
+        } catch (_: PaymentQueueOverflowException) {
             return ResponseEntity.status(HttpStatus.TOO_MANY_REQUESTS)
                 .header("Retry-After", "1")
                 .build()

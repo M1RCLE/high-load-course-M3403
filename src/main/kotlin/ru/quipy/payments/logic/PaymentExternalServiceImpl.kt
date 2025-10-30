@@ -7,6 +7,7 @@ import okhttp3.Request
 import okhttp3.RequestBody
 import org.slf4j.Logger
 import org.slf4j.LoggerFactory
+import ru.quipy.common.utils.LeakingBucketRateLimiter
 import ru.quipy.common.utils.SlidingWindowRateLimiter
 import ru.quipy.core.EventSourcingService
 import ru.quipy.payments.api.PaymentAggregate
@@ -42,9 +43,10 @@ class PaymentExternalSystemAdapterImpl(
 
     private val semaphore = Semaphore(parallelRequests, true)
 
-    private val rateLimiter = SlidingWindowRateLimiter(
+    private val rateLimiter = LeakingBucketRateLimiter(
         rateLimitPerSec.toLong(),
-        Duration.ofSeconds(1)
+        Duration.ofSeconds(1),
+        (rateLimitPerSec * 1.2).toInt() // Example bucket size: use something reasonable or make configurable
     )
 
     fun deadlineHandler(paymentId: UUID, transactionId: UUID, reason: String) {
@@ -65,7 +67,7 @@ class PaymentExternalSystemAdapterImpl(
         }
         try {
             // Если блокировка взята, то пытаемся влезть в окно исполнения до возможного момента вызова
-            if (!rateLimiter.blockingUntil(deadline)) {
+            if (!rateLimiter.tick()) {
                 deadlineHandler(paymentId, transactionId, "Rate limit exceeded")
                 return
             }

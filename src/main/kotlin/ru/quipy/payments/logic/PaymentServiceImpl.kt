@@ -27,12 +27,20 @@ class PaymentSystemImpl(
 
     companion object {
         val logger = LoggerFactory.getLogger(PaymentSystemImpl::class.java)
+
+        const val MAX_RETRIES = 4
     }
 
     override fun submitPaymentRequest(paymentId: UUID, amount: Int, paymentStartedAt: Long, deadline: Long) {
         for (account in paymentAccounts) {
-            account.performPaymentAsync(paymentId, amount, paymentStartedAt, deadline)
-            ansCounter.increment()
+            for (i in 1..MAX_RETRIES) {
+                val res = account.performPaymentAsync(paymentId, amount, paymentStartedAt, deadline)
+                if (res) {
+                    break
+                } else {
+                    Thread.sleep((10 * i).toLong())
+                }
+            }
         }
     }
 }

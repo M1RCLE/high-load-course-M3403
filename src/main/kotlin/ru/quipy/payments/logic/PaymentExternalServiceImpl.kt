@@ -56,20 +56,22 @@ class PaymentExternalSystemAdapterImpl(
         logger.error("[$accountName] Payment failed for txId: $transactionId, payment: $paymentId. Reason: $reason")
     }
 
-    override fun performPaymentAsync(paymentId: UUID, amount: Int, paymentStartedAt: Long, deadline: Long) {
+    override fun performPaymentAsync(paymentId: UUID, amount: Int, paymentStartedAt: Long, deadline: Long): Boolean {
         logger.warn("[$accountName] Try to submit payment request for payment $paymentId")
         val transactionId = UUID.randomUUID()
         var acquired = semaphoreRequestAcquire(semaphore, deadline)
+        var result = false
+
         // Пытаемся взять блокировку на ограничение параллельных запросов к сервису
         if (!acquired) {
             deadlineHandler(paymentId, transactionId, "Unable to acquire request semaphore")
-            return
+            return false
         }
         try {
             // Если блокировка взята, то пытаемся влезть в окно исполнения до возможного момента вызова
             if (!rateLimiter.tick()) {
                 deadlineHandler(paymentId, transactionId, "Rate limit exceeded")
-                return
+                return false
             }
             try {
 
@@ -97,8 +99,11 @@ class PaymentExternalSystemAdapterImpl(
 
                     logger.warn("[$accountName] Payment processed for txId: $transactionId, payment: $paymentId, succeeded: ${body.result}, message: ${body.message}")
 
+                    result = body.result
+
                     // Здесь мы обновляем состояние оплаты в зависимости от результата в базе данных оплат.
                     // Это требуется сделать ВО ВСЕХ ИСХОДАХ (успешная оплата / неуспешная / ошибочная ситуация)
+                    logger.warn("[$accountName] Payment passed with result: ${body.result}, and message: ${body.message}")
                     paymentESService.update(paymentId) {
                         it.logProcessing(body.result, now(), transactionId, reason = body.message)
                     }
@@ -123,6 +128,7 @@ class PaymentExternalSystemAdapterImpl(
         } finally {
             if (acquired) semaphore.release()
         }
+        return result
     }
 
     override fun price() = properties.price

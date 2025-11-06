@@ -31,6 +31,8 @@ class PaymentExternalSystemAdapterImpl(
 
         val emptyBody = RequestBody.create(null, ByteArray(0))
         val mapper = ObjectMapper().registerKotlinModule()
+
+        const val MAX_RETRIES_AMOUNT = 4
     }
 
     private val serviceName = properties.serviceName
@@ -60,6 +62,8 @@ class PaymentExternalSystemAdapterImpl(
         logger.warn("[$accountName] Try to submit payment request for payment $paymentId")
         val transactionId = UUID.randomUUID()
         var acquired = semaphoreRequestAcquire(semaphore, deadline)
+        var result = false
+
         // Пытаемся взять блокировку на ограничение параллельных запросов к сервису
         if (!acquired) {
             deadlineHandler(paymentId, transactionId, "Unable to acquire request semaphore")
@@ -80,27 +84,37 @@ class PaymentExternalSystemAdapterImpl(
                     post(emptyBody)
                 }.build()
 
-                // Вне зависимости от исхода оплаты важно отметить что она была отправлена.
-                // Это требуется сделать ВО ВСЕХ СЛУЧАЯХ, поскольку эта информация используется сервисом тестирования.
-                paymentESService.update(paymentId) {
-                    it.logSubmission(success = true, transactionId, now(), Duration.ofMillis(now() - paymentStartedAt))
-                }
 
-                client.newCall(request).execute().use { response ->
-                    semaphore.release().also { acquired = false } // Снимаем семафор пораньше
-                    val body = try {
-                        mapper.readValue(response.body?.string(), ExternalSysResponse::class.java)
-                    } catch (e: Exception) {
-                        logger.error("[$accountName] [ERROR] Payment processed for txId: $transactionId, payment: $paymentId, result code: ${response.code}, reason: ${response.body?.string()}")
-                        ExternalSysResponse(transactionId.toString(), paymentId.toString(), false, e.message)
+                for (attempt in 1..MAX_RETRIES_AMOUNT) {
+                    var result = false
+                    // Вне зависимости от исхода оплаты важно отметить что она была отправлена.
+                    // Это требуется сделать ВО ВСЕХ СЛУЧАЯХ, поскольку эта информация используется сервисом тестирования.
+                    paymentESService.update(paymentId) {
+                        it.logSubmission(success = true, transactionId, now(), Duration.ofMillis(now() - paymentStartedAt))
                     }
 
-                    logger.warn("[$accountName] Payment processed for txId: $transactionId, payment: $paymentId, succeeded: ${body.result}, message: ${body.message}")
+                    client.newCall(request).execute().use { response ->
+                        semaphore.release().also { acquired = false } // Снимаем семафор пораньше
+                        val body = try {
+                            mapper.readValue(response.body?.string(), ExternalSysResponse::class.java)
+                        } catch (e: Exception) {
+                            logger.error("[$accountName] [ERROR] Payment processed for txId: $transactionId, payment: $paymentId, result code: ${response.code}, reason: ${response.body?.string()}")
+                            ExternalSysResponse(transactionId.toString(), paymentId.toString(), false, e.message)
+                        }
 
-                    // Здесь мы обновляем состояние оплаты в зависимости от результата в базе данных оплат.
-                    // Это требуется сделать ВО ВСЕХ ИСХОДАХ (успешная оплата / неуспешная / ошибочная ситуация)
-                    paymentESService.update(paymentId) {
-                        it.logProcessing(body.result, now(), transactionId, reason = body.message)
+                        logger.warn("[$accountName] Payment processed for txId: $transactionId, payment: $paymentId, succeeded: ${body.result}, message: ${body.message}")
+
+                        result = body.result
+                        logger.info("[$accountName] Payment passed with result: ${body.result}, and message: ${body.message}, attempt number: $attempt")
+
+                        // Здесь мы обновляем состояние оплаты в зависимости от результата в базе данных оплат.
+                        // Это требуется сделать ВО ВСЕХ ИСХОДАХ (успешная оплата / неуспешная / ошибочная ситуация)
+                        paymentESService.update(paymentId) {
+                            it.logProcessing(body.result, now(), transactionId, reason = body.message)
+                        }
+                    }
+                    if (result) {
+                        break
                     }
                 }
             } catch (e: Exception) {

@@ -1,18 +1,12 @@
 package ru.quipy.payments.logic
 
 import io.micrometer.core.instrument.Counter
+import io.micrometer.core.instrument.DistributionSummary
 import io.micrometer.core.instrument.MeterRegistry
 import org.slf4j.LoggerFactory
 import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.stereotype.Service
-import ru.quipy.common.utils.NamedThreadFactory
-import ru.quipy.core.EventSourcingService
-import ru.quipy.payments.api.PaymentAggregate
-import java.time.Duration
 import java.util.*
-import java.util.concurrent.Executors
-import java.util.concurrent.locks.ReentrantLock
-import kotlin.concurrent.withLock
 
 
 @Service
@@ -34,7 +28,19 @@ class PaymentSystemImpl(
     override fun submitPaymentRequest(paymentId: UUID, amount: Int, paymentStartedAt: Long, deadline: Long) {
         for (account in paymentAccounts) {
             for (i in 1..MAX_RETRIES) {
-                val res = account.performPaymentAsync(paymentId, amount, paymentStartedAt, deadline)
+                val startRequestTime = System.currentTimeMillis()
+
+                val (res, statusCode) = account.performPaymentAsync(paymentId, amount, paymentStartedAt, deadline)
+
+                val requestDuration = System.currentTimeMillis() - startRequestTime
+
+                DistributionSummary.builder("request_latency")
+                    .description("Request latency.")
+                    .tag("status_code", statusCode.toString())
+                    .publishPercentiles(0.5, 0.8, 0.99)
+                    .register(meterRegistry)
+                    .record(requestDuration.toDouble())
+
                 if (res) {
                     break
                 } else {

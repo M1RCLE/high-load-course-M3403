@@ -35,11 +35,15 @@ class PaymentExternalSystemAdapterImpl(
 
     private val serviceName = properties.serviceName
     private val accountName = properties.accountName
-    private val averageProcessTime = properties.averageProcessingTime
+    private val requestTimeout = properties.averageProcessingTime.toMillis()
     private val rateLimitPerSec = properties.rateLimitPerSec
     private val parallelRequests = properties.parallelRequests
 
-    private val client = OkHttpClient.Builder().build()
+    private val client = OkHttpClient.Builder().connectTimeout(requestTimeout, TimeUnit.MILLISECONDS)
+        .callTimeout(requestTimeout, TimeUnit.MILLISECONDS)
+        .readTimeout(requestTimeout, TimeUnit.MILLISECONDS)
+        .writeTimeout(requestTimeout, TimeUnit.MILLISECONDS)
+        .build()
 
     private val semaphore = Semaphore(parallelRequests, true)
 
@@ -56,22 +60,28 @@ class PaymentExternalSystemAdapterImpl(
         logger.error("[$accountName] Payment failed for txId: $transactionId, payment: $paymentId. Reason: $reason")
     }
 
-    override fun performPaymentAsync(paymentId: UUID, amount: Int, paymentStartedAt: Long, deadline: Long): Boolean {
+    override fun performPaymentAsync(
+        paymentId: UUID,
+        amount: Int,
+        paymentStartedAt: Long,
+        deadline: Long
+    ): Pair<Boolean, Int> {
         logger.warn("[$accountName] Try to submit payment request for payment $paymentId")
         val transactionId = UUID.randomUUID()
         var acquired = semaphoreRequestAcquire(semaphore, deadline)
         var result = false
+        var statusCode = 500
 
         // Пытаемся взять блокировку на ограничение параллельных запросов к сервису
         if (!acquired) {
             deadlineHandler(paymentId, transactionId, "Unable to acquire request semaphore")
-            return false
+            return Pair(false, 503) // Service Unavailable
         }
         try {
             // Если блокировка взята, то пытаемся влезть в окно исполнения до возможного момента вызова
             if (!rateLimiter.tick()) {
                 deadlineHandler(paymentId, transactionId, "Rate limit exceeded")
-                return false
+                return Pair(false, 429) // Too Many Requests
             }
             try {
 
@@ -82,13 +92,27 @@ class PaymentExternalSystemAdapterImpl(
                     post(emptyBody)
                 }.build()
 
+                //   оставшееся время до deadline и  таймаут
+                val remainingTime = deadline - System.currentTimeMillis()
+                val clientCallTimeout = minOf(requestTimeout, remainingTime)
+
+                // Если время не осталось, то зачем нам исполнять запроч. бог с ним
+                if (clientCallTimeout <= 0) {
+                    deadlineHandler(paymentId, transactionId, "Deadline exceeded before request")
+                    return Pair(false, 408) // Request Timeout
+                }
+
+                val clientCall = client.newCall(request)
+                clientCall.timeout().timeout(clientCallTimeout, TimeUnit.MILLISECONDS)
+
                 // Вне зависимости от исхода оплаты важно отметить что она была отправлена.
                 // Это требуется сделать ВО ВСЕХ СЛУЧАЯХ, поскольку эта информация используется сервисом тестирования.
                 paymentESService.update(paymentId) {
                     it.logSubmission(success = true, transactionId, now(), Duration.ofMillis(now() - paymentStartedAt))
                 }
 
-                client.newCall(request).execute().use { response ->
+                clientCall.execute().use { response ->
+                    statusCode = response.code
                     semaphore.release().also { acquired = false } // Снимаем семафор пораньше
                     val body = try {
                         mapper.readValue(response.body?.string(), ExternalSysResponse::class.java)
@@ -111,12 +135,14 @@ class PaymentExternalSystemAdapterImpl(
             } catch (e: Exception) {
                 when (e) {
                     is SocketTimeoutException -> {
+                        statusCode = 408 // Request Timeout
                         logger.error("[$accountName] Payment timeout for txId: $transactionId, payment: $paymentId", e)
                         paymentESService.update(paymentId) {
                             it.logProcessing(false, now(), transactionId, reason = "Request timeout.")
                         }
                     }
                     else -> {
+                        statusCode = 500 // Internal Server Error
                         logger.error("[$accountName] Payment failed for txId: $transactionId, payment: $paymentId", e)
 
                         paymentESService.update(paymentId) {
@@ -128,7 +154,7 @@ class PaymentExternalSystemAdapterImpl(
         } finally {
             if (acquired) semaphore.release()
         }
-        return result
+        return Pair(result, statusCode)
     }
 
     override fun price() = properties.price

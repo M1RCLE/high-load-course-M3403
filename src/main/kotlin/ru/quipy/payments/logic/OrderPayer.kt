@@ -4,30 +4,32 @@ import org.slf4j.Logger
 import org.slf4j.LoggerFactory
 import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.stereotype.Service
-import ru.quipy.common.utils.CallerBlockingRejectedExecutionHandler
-import ru.quipy.common.utils.InstantRateLimitSemaphore
 import ru.quipy.common.utils.NamedThreadFactory
-import ru.quipy.common.utils.TooManyRequestsException
 import ru.quipy.core.EventSourcingService
 import ru.quipy.payments.api.PaymentAggregate
-import java.time.Duration
-import java.time.Instant
-import java.util.UUID
+import java.util.*
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.ThreadPoolExecutor
 import java.util.concurrent.TimeUnit
-import kotlin.math.roundToInt
-import kotlin.math.roundToLong
+import java.time.Duration
+import io.micrometer.core.instrument.Counter
+import io.micrometer.core.instrument.Gauge
+import io.micrometer.core.instrument.MeterRegistry
+import ru.quipy.common.utils.TokenBucketRateLimiter
+import java.util.concurrent.RejectedExecutionException
+import kotlin.math.ceil
+import kotlin.math.min
 
 @Service
-class OrderPayer(paymentAccountProperties: List<PaymentAccountProperties>) {
+class OrderPayer(
+    private val paymentAccountProperties: List<PaymentAccountProperties>,
+    registry: MeterRegistry
+) {
 
     companion object {
         val logger: Logger = LoggerFactory.getLogger(OrderPayer::class.java)
         const val MIN_PARALLEL_PROCESS = 16
         const val MAX_PARALLEL_PROCESS = 256
-        const val DELAY_COEFFICIENT = 1.2
-        const val MIN_DELAY_ADD_MILLIS = 75L
     }
 
     @Autowired
@@ -36,79 +38,148 @@ class OrderPayer(paymentAccountProperties: List<PaymentAccountProperties>) {
     @Autowired
     private lateinit var paymentService: PaymentService
 
-    private val parallelThreads = paymentAccountProperties
-        .sumOf { it.rateLimitPerSec.coerceAtMost(MAX_PARALLEL_PROCESS) }
-    private val poolSize = (parallelThreads + 2)
-        .coerceAtLeast(MIN_PARALLEL_PROCESS)
-        .coerceAtMost(MAX_PARALLEL_PROCESS)
+    // Расчет ingressRate на основе свойств платежных аккаунтов
+    private val ingressRate = calculateIngressRate()
+
+    // Расчет среднего времени обработки
+    private val averageProcessingTimeMs = calculateAverageProcessingTime()
 
     private val paymentExecutor = ThreadPoolExecutor(
-        poolSize,
-        poolSize,
+        MIN_PARALLEL_PROCESS,
+        MAX_PARALLEL_PROCESS,
         0L,
         TimeUnit.MILLISECONDS,
-        LinkedBlockingQueue(8_000),
+        LinkedBlockingQueue(256),
         NamedThreadFactory("payment-submission-executor"),
-        CallerBlockingRejectedExecutionHandler()
+        ThreadPoolExecutor.AbortPolicy()
     )
 
-    private val callsPerMinute = paymentAccountProperties.sumOf {
-        (TimeUnit.MINUTES.toNanos(1).toDouble() *
-                it.rateLimitPerSec.coerceAtMost(MAX_PARALLEL_PROCESS) /
-                it.averageProcessingTime.toNanos()).roundToInt()}
+    private val limiter = TokenBucketRateLimiter(
+        rate = ingressRate,
+        bucketMaxCapacity = ingressRate * 10,
+        window = 1,
+        timeUnit = TimeUnit.SECONDS
+    )
 
-    private val minAverageProcessingTime = paymentAccountProperties.minOf { it.averageProcessingTime }
-    private val maxAverageProcessingTime = paymentAccountProperties.maxOf { it.averageProcessingTime }
+    // Metrics from first example
+    private val acceptedCounter: Counter = Counter
+        .builder("payments.accepted")
+        .register(registry)
 
+    private val rejectedExpired = registry.counter("payments.rejected", "code", "429", "reason", "expired")
+    private val rejectedDeadline = registry.counter("payments.rejected", "code", "429", "reason", "deadline_budget")
+    private val rejectedLimiter = registry.counter("payments.rejected", "code", "429", "reason", "limiter_throttle")
+    private val rejectedQueue = registry.counter("payments.rejected", "code", "429", "reason", "queue_overflow")
 
-    /**
-     * Это предполагаемое время, которое может понадобиться внешнему сервису на выполнение нашего запроса
-     * Т.е.: если у нас до deathTime остаётся меньше callDelay, то мы его не ставим в очередь, а получаем
-     * отказ от семафора
-     */
-    val callDelay: Duration = Duration
-        .ofMillis((minAverageProcessingTime.toMillis() * DELAY_COEFFICIENT)
-            .roundToLong()
-            .coerceAtLeast(MIN_DELAY_ADD_MILLIS))
+    init {
+        Gauge.builder("waiting.queue.size") { paymentExecutor.queue.size.toDouble() }
+            .description("Tasks waiting in payment submission executor queue")
+            .register(registry)
 
-    val instantRateLimitSemaphore =
-        Triple(
-            // Делаем объем по задачам на несколько секунды вперед.
-            // То есть если есть свободные места в очереди на эти 3 величины обработки запроса и задаче не протухнет
-            // до того момента, когда сможет выполниться, то мы её ставим в очередь, а если нет,
-            // то возвращаем TooManyRequests
-            maxAverageProcessingTime.multipliedBy(3),
-            TimeUnit.MINUTES,
-            callsPerMinute
-        ).let {
-            logger.info("Create OrderPayer::InstantRateLimitSemaphore(duration=${it.first}, timeUnit=${it.second}, rate=${it.third})")
-            InstantRateLimitSemaphore(it.first, it.second, it.third)
+        logger.info("OrderPayer initialized with ingressRate: $ingressRate, averageProcessingTimeMs: $averageProcessingTimeMs, threadPool: ${MIN_PARALLEL_PROCESS}-${MAX_PARALLEL_PROCESS}")
+        logger.info("Payment account properties: ${paymentAccountProperties.size} accounts")
+        paymentAccountProperties.forEachIndexed { index, props ->
+            logger.info("Account $index: rateLimitPerSec=${props.rateLimitPerSec}, averageProcessingTime=${props.averageProcessingTime}")
         }
+    }
+
+    private fun calculateIngressRate(): Int {
+        return paymentAccountProperties
+            .sumOf { it.rateLimitPerSec }
+            .coerceAtLeast(1)
+            .also { rate ->
+                logger.debug("Calculated ingress rate: $rate from ${paymentAccountProperties.size} accounts")
+            }
+    }
+
+    private fun calculateAverageProcessingTime(): Long {
+        return if (paymentAccountProperties.isNotEmpty()) {
+            paymentAccountProperties
+                .map { it.averageProcessingTime.toMillis() }
+                .average()
+                .toLong()
+                .coerceAtLeast(100) // minimum 100ms
+        } else {
+            1000L
+        }.also { avgTime ->
+            logger.debug("Calculated average processing time: ${avgTime}ms")
+        }
+    }
+
+    private fun now(): Long = System.currentTimeMillis()
 
     fun processPayment(orderId: UUID, amount: Int, paymentId: UUID, deadline: Long): Long {
-        val createdAt = System.currentTimeMillis()
-        val deadLineTime = Instant.ofEpochMilli(deadline)
-        if (instantRateLimitSemaphore.acquire(deadLineTime.minus(callDelay))) {
-            paymentExecutor.submit {
-                try {
-                    val createdEvent = paymentESService.create {
-                        it.create(
-                            paymentId,
-                            orderId,
-                            amount
-                        )
-                    }
-                    logger.trace("Payment {} for order {} created.", createdEvent.paymentId, orderId)
+        val createdAt = now()
+        val timeBudgetMs = deadline - createdAt
 
-                    paymentService.submitPaymentRequest(paymentId, amount, createdAt, deadline)
-                } finally {
-                    instantRateLimitSemaphore.release()
-                }
-            }
-        } else {
-            logger.error("Payment: $paymentId retried. Too many requests")
-            throw TooManyRequestsException()
+        // Check if request already expired
+        if (timeBudgetMs <= 0L) {
+            rejectedExpired.increment()
+            throw TooManyRequestsException(100)
         }
+
+        // Calculate queue waiting time and check deadline budget
+        val qSize = paymentExecutor.queue.size + 1
+        val qWaitMs = ((qSize.toDouble() / ingressRate) * 1000).toLong()
+        val jitterMs = 300L
+        val safety = averageProcessingTimeMs + jitterMs
+
+        if (qWaitMs + safety >= timeBudgetMs) {
+            rejectedDeadline.increment()
+            val retryBase = ceil(1000.0 / ingressRate).toLong()
+            val backoffMs = (retryBase + min(qWaitMs, 2000)).coerceIn(50, 3000)
+            throw TooManyRequestsException(backoffMs)
+        }
+
+        // Rate limiter check
+        if (!limiter.tick()) {
+            rejectedLimiter.increment()
+            val retryBase = ceil(1000.0 / ingressRate).toLong()
+            val currentQWaitMs = ((paymentExecutor.queue.size.toDouble() / ingressRate) * 1000).toLong()
+            val backoffMs = (retryBase + min(currentQWaitMs, 2000)).coerceIn(50, 3000)
+            throw TooManyRequestsException(backoffMs)
+        }
+
+        // Queue capacity check
+        if (paymentExecutor.queue.remainingCapacity() == 0) {
+            rejectedQueue.increment()
+            val backoffMs = (5 * ceil(1000.0 / ingressRate)).toLong()
+            throw TooManyRequestsException(backoffMs)
+        }
+
+        acceptedCounter.increment()
+
+        val task = Runnable {
+            val createdEvent = paymentESService.create {
+                it.create(
+                    paymentId,
+                    orderId,
+                    amount
+                )
+            }
+            logger.trace("Payment ${createdEvent.paymentId} for order $orderId created.")
+
+            paymentService.submitPaymentRequest(paymentId, amount, createdAt, deadline)
+        }
+
+        try {
+            paymentExecutor.submit(task)
+        } catch (ex: RejectedExecutionException) {
+            rejectedQueue.increment()
+            val qSizeAfterReject = paymentExecutor.queue.size
+            val backoffMs = (5 * ceil(1000.0 / ingressRate)).toLong()
+            logger.error(
+                "paymentExecutor rejected paymentId={}, queueSize={}, activeThreads={}",
+                paymentId,
+                qSizeAfterReject,
+                paymentExecutor.activeCount,
+                ex
+            )
+            throw TooManyRequestsException(backoffMs)
+        }
+
         return createdAt
     }
 }
+
+class TooManyRequestsException(val retryAfterMillis: Long) : RuntimeException("Too many requests")

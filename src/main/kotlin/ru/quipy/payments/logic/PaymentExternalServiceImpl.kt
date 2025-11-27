@@ -7,6 +7,7 @@ import okhttp3.Callback
 import okhttp3.ConnectionPool
 import okhttp3.Dispatcher
 import okhttp3.OkHttpClient
+import okhttp3.Protocol
 import okhttp3.Request
 import okhttp3.RequestBody
 import okhttp3.Response
@@ -61,6 +62,7 @@ class PaymentExternalSystemAdapterImpl(
         .dispatcher(dispatcher)
         .connectionPool(ConnectionPool(parallelRequests, 20, java.util.concurrent.TimeUnit.SECONDS))
         .readTimeout(Duration.ofSeconds(30))
+        .protocols(listOf(Protocol.HTTP_2))
         .build()
 
     private val ongoingWindow = NonBlockingOngoingWindow(parallelRequests)

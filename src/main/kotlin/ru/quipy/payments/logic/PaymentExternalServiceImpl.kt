@@ -71,7 +71,7 @@ class PaymentExternalSystemAdapterImpl(
     private val client =     OkHttpClient.Builder()
         .dispatcher(dispatcher)
         .connectionPool(ConnectionPool(parallelRequests, 20, TimeUnit.SECONDS))
-        .protocols(listOf(Protocol.HTTP_2))
+        .protocols(listOf(Protocol.H2_PRIOR_KNOWLEDGE))
         .readTimeout(Duration.ofSeconds(30))
         .build()
 

@@ -4,8 +4,10 @@ import com.fasterxml.jackson.databind.ObjectMapper
 import com.fasterxml.jackson.module.kotlin.registerKotlinModule
 import okhttp3.Call
 import okhttp3.Callback
+import okhttp3.ConnectionPool
 import okhttp3.Dispatcher
 import okhttp3.OkHttpClient
+import okhttp3.Protocol
 import okhttp3.Request
 import okhttp3.RequestBody
 import okhttp3.Response
@@ -65,8 +67,12 @@ class PaymentExternalSystemAdapterImpl(
         maxRequestsPerHost = parallelRequests * 2
     }
 
-    private val client = OkHttpClient.Builder()
+
+    private val client =     OkHttpClient.Builder()
         .dispatcher(dispatcher)
+        .connectionPool(ConnectionPool(parallelRequests, 20, TimeUnit.SECONDS))
+        .protocols(listOf(Protocol.HTTP_2))
+        .readTimeout(Duration.ofSeconds(30))
         .build()
 
     private val semaphore = Semaphore(parallelRequests, true)

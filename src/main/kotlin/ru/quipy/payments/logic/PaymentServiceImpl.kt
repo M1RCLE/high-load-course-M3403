@@ -10,6 +10,7 @@ import ru.quipy.core.EventSourcingService
 import ru.quipy.payments.api.PaymentAggregate
 import java.time.Duration
 import java.util.*
+import java.util.concurrent.CompletableFuture
 import java.util.concurrent.Executors
 import java.util.concurrent.locks.ReentrantLock
 import kotlin.concurrent.withLock
@@ -29,10 +30,12 @@ class PaymentSystemImpl(
         val logger = LoggerFactory.getLogger(PaymentSystemImpl::class.java)
     }
 
-    override fun submitPaymentRequest(paymentId: UUID, amount: Int, paymentStartedAt: Long, deadline: Long) {
-        for (account in paymentAccounts) {
-            account.performPaymentAsync(paymentId, amount, paymentStartedAt, deadline)
+    override fun submitPaymentRequest(paymentId: UUID, amount: Int, paymentStartedAt: Long, deadline: Long): CompletableFuture<Boolean> {
+        val enabledAccount = paymentAccounts.firstOrNull { it.isEnabled() }
+        if (enabledAccount != null) {
             ansCounter.increment()
+            return enabledAccount.performPaymentAsync(paymentId, amount, paymentStartedAt, deadline)
         }
+        return CompletableFuture.completedFuture(false)
     }
 }

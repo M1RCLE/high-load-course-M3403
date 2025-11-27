@@ -83,6 +83,7 @@ class APIController(@Autowired val meterRegistry: MeterRegistry) {
 
 
         val createdAt = orderPayer.processPayment(orderId, order.price, paymentId, deadline)
+            ?: throw TooManyRequestsException()
         return PaymentSubmissionDto(createdAt, paymentId)
     }
 

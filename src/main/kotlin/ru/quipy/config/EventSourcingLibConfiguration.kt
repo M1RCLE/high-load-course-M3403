@@ -79,8 +79,8 @@ class EventSourcingLibConfiguration {
             server.connectors.forEach { connector ->
                 val executor = connector.executor
                 if (executor is org.eclipse.jetty.util.thread.QueuedThreadPool) {
-                    executor.minThreads = 32
-                    executor.maxThreads = 128
+                    executor.minThreads = 64
+                    executor.maxThreads = 200
                 }
             }
         }

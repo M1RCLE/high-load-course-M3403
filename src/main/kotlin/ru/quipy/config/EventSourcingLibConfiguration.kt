@@ -66,12 +66,23 @@ class EventSourcingLibConfiguration {
         }
     }
 
-    @Bean // hack Jetty to tweak the number of possible https2 streams
+    @Bean // hack Jetty to tweak the number of possible https2 streams and optimize for high load
     fun jettyServerCustomizer(): JettyServletWebServerFactory {
         val jettyServletWebServerFactory = JettyServletWebServerFactory()
 
-        val c = JettyServerCustomizer {
-            (it.connectors[0].getConnectionFactory("h2c") as HTTP2CServerConnectionFactory).maxConcurrentStreams = 10_000_000
+        val c = JettyServerCustomizer { server ->
+            // Настройка HTTP/2
+            (server.connectors[0].getConnectionFactory("h2c") as HTTP2CServerConnectionFactory).maxConcurrentStreams = 10_000_000
+            
+            // Оптимизация пула потоков для обработки входящих запросов
+            // Acceptors и selectors настраиваются через application.properties
+            server.connectors.forEach { connector ->
+                val executor = connector.executor
+                if (executor is org.eclipse.jetty.util.thread.QueuedThreadPool) {
+                    executor.minThreads = 64
+                    executor.maxThreads = 200
+                }
+            }
         }
 
         jettyServletWebServerFactory.serverCustomizers.add(c)

@@ -24,8 +24,8 @@ class OrderPayer(paymentAccountProperties: List<PaymentAccountProperties>) {
 
     companion object {
         val logger: Logger = LoggerFactory.getLogger(OrderPayer::class.java)
-        const val MIN_PARALLEL_PROCESS = 16
-        const val MAX_PARALLEL_PROCESS = 256
+        const val MIN_PARALLEL_PROCESS = 64
+        const val MAX_PARALLEL_PROCESS = 512
         const val DELAY_COEFFICIENT = 1.2
         const val MIN_DELAY_ADD_MILLIS = 75L
     }
@@ -42,12 +42,13 @@ class OrderPayer(paymentAccountProperties: List<PaymentAccountProperties>) {
         .coerceAtLeast(MIN_PARALLEL_PROCESS)
         .coerceAtMost(MAX_PARALLEL_PROCESS)
 
+    // Увеличена очередь до 50000 для обработки большего количества запросов
     private val paymentExecutor = ThreadPoolExecutor(
         poolSize,
         poolSize,
         0L,
         TimeUnit.MILLISECONDS,
-        LinkedBlockingQueue(8_000),
+        LinkedBlockingQueue(50_000),
         NamedThreadFactory("payment-submission-executor"),
         CallerBlockingRejectedExecutionHandler()
     )

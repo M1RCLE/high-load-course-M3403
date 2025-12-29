@@ -4,13 +4,13 @@ POST http://77.234.215.138:34321/run
 Content-Type: application/json
 
 {
-  "serviceName": "{{serviceName}}",
-  "token": "{{token}}",
-  "branch": "lab4",
-  "accounts": "{{accounts}}",
-  "ratePerSecond": {{ratePerSecond}},
-  "testCount": {{testCount}},
-  "processingTimeMillis": {{processingTimeMillis}}
+  "serviceName": "m3403-8",
+  "token": "bTgVPIlM5Jbr0T03=8",
+  "branch": "lab9_M",
+  "accounts": "acc-12",
+  "ratePerSecond": "1000",
+  "testCount": "200000",
+  "processingTimeMillis": "50000"
 }
 
 ### Stop running test to save credits

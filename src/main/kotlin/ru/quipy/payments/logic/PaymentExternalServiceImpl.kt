@@ -162,6 +162,7 @@ class PaymentExternalSystemAdapterImpl(
             .version(Version.HTTP_2)
             .POST(HttpRequest.BodyPublishers.noBody())
             .timeout(Duration.ofMillis(timeoutMs))
+            .header("x-idempotency-key", transactionId.toString())
             .build()
 
         return client.sendAsync(request, HttpResponse.BodyHandlers.ofString())

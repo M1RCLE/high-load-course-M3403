@@ -20,7 +20,7 @@ import java.util.concurrent.Executors
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.ThreadPoolExecutor
 import java.util.concurrent.TimeUnit
-import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 
 
 // Advice: always treat time as a Duration
@@ -93,7 +93,7 @@ class PaymentExternalSystemAdapterImpl(
 
     /**
      * Отправляет первый запрос и если за какое-то вермя  не получен ответ,
-     * отправляет параллельный запрос с тем же transactionId в качестве
+     *  * то отправляет параллельный запрос с тем же transactionId в качестве
      * ключа идемпотентности. Короче побеждает тот кто ответил первым
      */
     private fun performHedgedPayment(
@@ -103,41 +103,41 @@ class PaymentExternalSystemAdapterImpl(
         deadline: Long,
     ): CompletableFuture<Boolean> {
         val result = CompletableFuture<Boolean>()
-        val processed = AtomicBoolean(false)
+        // сколько запросов у нас щас. когда будет 0, то значит что все запросы отправили уже и они вернулись с ответами(дай бог)
+        val pending = AtomicInteger(0)
 
-        fun completeOnce(success: Boolean, reason: String?) {
-            if (processed.compareAndSet(false, true)) {
+        fun onSuccess(success: Boolean, reason: String?) {
+            // result.complete() атомарно вернёт true только первому вызову
+            if (result.complete(success)) {
                 paymentESService.update(paymentId) {
                     it.logProcessing(success, now(), transactionId, reason = reason)
                 }
-                result.complete(success)
             }
         }
 
-        fun failOnce(ex: Throwable) {
-            if (processed.compareAndSet(false, true)) {
+        fun onError(ex: Throwable) {
+            if (pending.decrementAndGet() == 0) {
                 result.completeExceptionally(ex)
             }
         }
 
-        fun launchRequest() {
+        fun send() {
             sendSingleRequest(paymentId, amount, transactionId)
-                .thenAcceptAsync({ (success, reason) -> completeOnce(success, reason) }, dbExecutor)
-                .exceptionally { ex -> failOnce(ex.cause ?: ex); null }
+                .thenAcceptAsync({ (success, reason) -> onSuccess(success, reason) }, dbExecutor)
+                .exceptionally { ex -> onError(ex.cause ?: ex); null }
         }
 
-        launchRequest()
+        pending.incrementAndGet()
+        send()
 
         val hedgeDelayMs = averageProcessTime.toMillis()
-        if (remainingMillis(deadline) > hedgeDelayMs + averageProcessTime.toMillis()) {
+        if (remainingMillis(deadline) > hedgeDelayMs * 2) {
+            // Резервируем слот заране, xnj,s если первый упадёт до старта hedge, то
+            // pending не обнулится раньше
+            pending.incrementAndGet()
             scheduler.schedule({
-                if (!result.isDone) {
-                    try {
-                        launchRequest()
-                    } catch (e: Exception) {
-                        logger.error("[$accountName] Hedged request failed to start for txId: $transactionId, payment: $paymentId", e)
-                    }
-                }
+                if (!result.isDone) send()
+                else pending.decrementAndGet() // тут типа первый уже ответил
             }, hedgeDelayMs, TimeUnit.MILLISECONDS)
         }
 

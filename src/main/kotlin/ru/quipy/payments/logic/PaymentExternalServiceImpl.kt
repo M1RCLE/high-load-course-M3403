@@ -133,7 +133,6 @@ class PaymentExternalSystemAdapterImpl(
             scheduler.schedule({
                 if (!result.isDone) {
                     try {
-                        rateLimiter.tickBlocking()
                         launchRequest()
                     } catch (e: Exception) {
                         logger.error("[$accountName] Hedged request failed to start for txId: $transactionId, payment: $paymentId", e)

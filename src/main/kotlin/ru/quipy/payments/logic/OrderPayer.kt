@@ -26,8 +26,8 @@ class OrderPayer(paymentAccountProperties: List<PaymentAccountProperties>) {
         val logger: Logger = LoggerFactory.getLogger(OrderPayer::class.java)
         const val MIN_PARALLEL_PROCESS = 64
         const val MAX_PARALLEL_PROCESS = 512
-        const val DELAY_COEFFICIENT = 0.8
-        const val MIN_DELAY_ADD_MILLIS = 50L
+        const val DELAY_COEFFICIENT = 0.0
+        const val MIN_DELAY_ADD_MILLIS = 10L
     }
 
     @Autowired
@@ -100,11 +100,10 @@ class OrderPayer(paymentAccountProperties: List<PaymentAccountProperties>) {
                         )
                     }
                     logger.trace("Payment {} for order {} created.", createdEvent.paymentId, orderId)
-
-                    paymentService.submitPaymentRequest(paymentId, amount, createdAt, deadline)
                 } finally {
                     instantRateLimitSemaphore.release()
                 }
+                paymentService.submitPaymentRequest(paymentId, amount, createdAt, deadline)
             }
         } else {
             logger.error("Payment: $paymentId retried. Too many requests")

@@ -68,7 +68,7 @@ class PaymentExternalSystemAdapterImpl(
         .build()
 
     private val rateLimiter = SlidingWindowRateLimiter(
-        (rateLimitPerSec * 0.95).toLong(),
+        rateLimitPerSec.toLong(),
         Duration.ofSeconds(1)
     )
 
@@ -122,7 +122,9 @@ class PaymentExternalSystemAdapterImpl(
         }
 
         fun send() {
-            sendSingleRequest(paymentId, amount, transactionId)
+            // Таймаут HTTP привязываем к дедлайну — не ждём 30с если платёж уже не успеет
+            val timeoutMs = remainingMillis(deadline).coerceAtLeast(500L)
+            sendSingleRequest(paymentId, amount, transactionId, timeoutMs)
                 .thenAcceptAsync({ (success, reason) -> onSuccess(success, reason) }, dbExecutor)
                 .exceptionally { ex -> onError(ex.cause ?: ex); null }
         }
@@ -130,16 +132,22 @@ class PaymentExternalSystemAdapterImpl(
         pending.incrementAndGet()
         send()
 
-        val hedgeDelayMs = averageProcessTime.toMillis()
-        if (remainingMillis(deadline) > hedgeDelayMs * 2) {
-            // Резервируем слот заране, xnj,s если первый упадёт до старта hedge, то
-            // pending не обнулится раньше
-            pending.incrementAndGet()
-            scheduler.schedule({
-                if (!result.isDone) send()
-                else pending.decrementAndGet() // тут типа первый уже ответил
-            }, hedgeDelayMs, TimeUnit.MILLISECONDS)
+        fun scheduleHedge(delayMs: Long) {
+            if (remainingMillis(deadline) > delayMs) {
+                pending.incrementAndGet()
+                scheduler.schedule({
+                    if (!result.isDone) send()
+                    else pending.decrementAndGet()
+                }, delayMs, TimeUnit.MILLISECONDS)
+            }
         }
+
+        val avg = averageProcessTime.toMillis()
+        // 5 попыток равномерно по шкале дедлайна
+        scheduleHedge((avg * 0.10).toLong().coerceAtLeast(150L))  // ~1300ms остаток
+        scheduleHedge((avg * 0.22).toLong().coerceAtLeast(280L))  // ~1170ms остаток
+        scheduleHedge((avg * 0.38).toLong().coerceAtLeast(450L))  // ~1000ms остаток
+        scheduleHedge((avg * 0.55).toLong().coerceAtLeast(650L))  // ~800ms  остаток
 
         return result
     }
@@ -148,6 +156,7 @@ class PaymentExternalSystemAdapterImpl(
         paymentId: UUID,
         amount: Int,
         transactionId: UUID,
+        timeoutMs: Long = 30_000L,
     ): CompletableFuture<Pair<Boolean, String?>> {
         val url = "http://$paymentProviderHostPort/external/process?serviceName=$serviceName&token=$token&accountName=$accountName&transactionId=$transactionId&paymentId=$paymentId&amount=$amount"
         val request = HttpRequest.newBuilder()
@@ -155,7 +164,7 @@ class PaymentExternalSystemAdapterImpl(
             .version(Version.HTTP_2)
             .POST(HttpRequest.BodyPublishers.noBody())
             .header("x-idempotency-key", transactionId.toString())
-            .timeout(Duration.ofSeconds(30))
+            .timeout(Duration.ofMillis(timeoutMs))
             .build()
 
         return client.sendAsync(request, HttpResponse.BodyHandlers.ofString())
